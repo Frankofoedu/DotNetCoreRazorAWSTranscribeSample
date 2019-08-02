@@ -1,0 +1,31 @@
+﻿@page
+@model awsTranscriber.Pages.TranscribeModel
+@{
+    ViewData["Title"] = "Transcribe";
+}
+
+<h2>Transcribe</h2>
+
+@if (!string.IsNullOrWhiteSpace(Model.Error))
+{
+    <div class="alert alert-danger alert-dismissable fade show">
+        <button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>
+        @Model.Error
+    </div>
+}
+<form method="post" class="panel panel-login" enctype="multipart/form-data">
+    <div class="form-group">
+        <div class="col-md-3 ">
+            <label>Select File</label>
+            <input type="file" asp-for="Image" class="form-control" accept="audio/x-wav,audio/mpeg" />
+        </div>
+        <div class="col-md-3 ">
+            <label> </label>
+            <input type="submit" class="btn-primary form-control" value="Transcribe" />
+        </div>
+        <div class="col-md-6 ">
+            <label>Transcribed Audio</label>
+            <textarea  class="form-control" cols="10" rows="10">@Model.TranscribedText</textarea>
+        </div>
+    </div>
+</form>
