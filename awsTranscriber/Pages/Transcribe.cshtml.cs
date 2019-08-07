@@ -6,12 +6,14 @@ using System.Net.Http;
 using System.Text;
 using System.Threading.Tasks;
 using Amazon;
+using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Amazon.S3.Transfer;
 using Amazon.S3.Util;
 using Amazon.TranscribeService;
 using Amazon.TranscribeService.Model;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Internal;
 using Microsoft.AspNetCore.Mvc;
@@ -25,17 +27,24 @@ namespace awsTranscriber.Pages
     public class TranscribeModel : PageModel
     {
         //inject services into constructor
-        public TranscribeModel(IAmazonS3 client, IAmazonTranscribeService transcribeService)
+        public TranscribeModel(IAmazonS3 client, IAmazonTranscribeService transcribeService, IHostingEnvironment env)
         {
             _client = client;
             _transcribeService = transcribeService;
+            _env = env;
+            
         }
-
+        private readonly IHostingEnvironment _env;
         public readonly IAmazonS3 _client;
         public readonly IAmazonTranscribeService _transcribeService;
+        private readonly BasicAWSCredentials cr;
         public readonly string bucketname = "aws-transcriber";
+        private string region;
+        public List<string> s3Keys = new List<string>();
+
         [BindProperty]
         public IFormFile Image { get; set; }
+        [BindProperty]
         public string Error { get; set; }
         [BindProperty]
         public string TranscribedText { get; set; }
@@ -45,53 +54,81 @@ namespace awsTranscriber.Pages
 
         public void OnGet()
         {
-
+            Error = _env.WebRootPath;
+            
         }
 
-        // [RequestFormLimits(MultipartBodyLengthLimit = 209715200)]
         public async Task OnPostAsync()
         {
-
+           
             try
             {
-                //create bucket
-                await CreateBucket(_client, bucketname);
 
-                var mp3Path = Image.FileName;
+                var file = _env.WebRootPath + Path.Combine(@"\audio", Path.GetFileName(Image.FileName));
+                Directory.CreateDirectory(Path.GetDirectoryName(file));
 
-                var mp3Length = new Mp3FileReader(mp3Path).TotalTime;
-
-                DoTrim(mp3Path, mp3Length);
-
-                var files = Directory.GetFiles(Path.GetDirectoryName(mp3Path));
-                var sb = new StringBuilder();
-                foreach (var item in files)
+                using (var stream = new FileStream(file,FileMode.Create))
                 {
-                    string s3Key = Path.GetFileName(item);
-                    await UploadFile(item,s3Key);
-                   string transcriptUri = await TranscribeFile(s3Key, bucketname, $"{s3Key}--{DateTime.Now.Ticks.ToString()}");
+                   await Image.CopyToAsync(stream);
+                } 
 
-                    sb.Append(await GetTranscript(transcriptUri));
+
+
+                var mp3Length = new Mp3FileReader(file).TotalTime;
+
+                DoTrim(file, mp3Length);
+
+                var mp3FileName = Path.GetFileNameWithoutExtension(file);
+
+                var files = Directory.EnumerateFiles(Path.GetDirectoryName(file)).Where(fileName => fileName.ToLower().Contains(mp3FileName.ToLower())).ToList();
+                var sb = new StringBuilder();
+
+                if (files.Count <2)
+                {
+                    if (files.Any())
+                    {
+                        var item = files.First();
+                        string s3Key = Path.GetFileName(item);
+                        await UploadFile(item, s3Key);
+                        string transcriptUri = await TranscribeFile(s3Key, bucketname, $"{s3Key}--{DateTime.Now.Ticks.ToString()}");
+                        sb.AppendLine(await GetTranscript(transcriptUri));
+                    }                                          
 
                 }
+                else
+                {
+                    //get only trimmed files
+                    var newFiles = files.Where(x => x.Contains("trimmed")).ToList();
+                    foreach (var item in files)
+                    {
+                        string s3Key = Path.GetFileName(item);
+                        await UploadFile(item, s3Key);
+                        string transcriptUri = await TranscribeFile(s3Key, bucketname, $"{s3Key}--{DateTime.Now.Ticks.ToString()}");
+
+                        sb.AppendLine(await GetTranscript(transcriptUri));
+
+                    }
+                }
+               
+               
 
                 TranscribedText = sb.ToString();
                 //delete trimmed files if they exist
-                DeleteFiles(files);               
+                DeleteFiles(files.Where(x => x.Contains("trimmed")));               
             }
             catch (AmazonS3Exception e)
             {
-                Error = e.Message;
+                Error = e.ToString() + Environment.NewLine + e.InnerException;
                 // throw;
             }
             catch (AmazonTranscribeServiceException e)
             {
-                Console.WriteLine(e.Message);
+                Error = e.ToString() + Environment.NewLine + e.InnerException;
 
             }
             catch (Exception e)
             {
-                Error = e.Message;
+                Error = e.ToString() + Environment.NewLine + e.InnerException;
                 // return Page();
             }
 
@@ -164,6 +201,7 @@ namespace awsTranscriber.Pages
 
             while (true)
             {
+                await Task.Delay(TimeSpan.FromSeconds(2));
                 var status = _transcribeService.
                     GetTranscriptionJobAsync(new GetTranscriptionJobRequest { TranscriptionJobName = job_name });
 
@@ -240,11 +278,8 @@ namespace awsTranscriber.Pages
         static void DoTrim(string inputPath, TimeSpan length)
         {
            
-
             //AWS transcribe maximum length of audio to pass
-            var skip = new TimeSpan(0, 60, 0);
-
-            
+            var skip = new TimeSpan(0, 60,0);            
 
             if (length > skip)
             {
@@ -280,7 +315,7 @@ namespace awsTranscriber.Pages
         /// 
         /// </summary>
         /// <param name="x"></param>
-        private static void DeleteFiles(string[] x)
+        private static void DeleteFiles(IEnumerable<string> x)
         {
             foreach (var item in x)
             {
